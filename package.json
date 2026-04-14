@@ -12,10 +12,22 @@
     "niimbot-b21",
     "bluetooth",
     "serial",
-    "capacitor"
+    "capacitor",
+    "wechat",
+    "miniprogram"
   ],
   "main": "dist/cjs/index.js",
   "types": "dist/cjs/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/cjs/index.d.ts",
+      "default": "./dist/cjs/index.js"
+    },
+    "./wechat": {
+      "types": "./dist/cjs/wechat.d.ts",
+      "default": "./dist/cjs/wechat.js"
+    }
+  },
   "files": [
     "/dist"
   ],
