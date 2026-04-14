@@ -27,7 +27,8 @@ export class WechatBleDefaultConfiguration {
   public static readonly SERVICE_UUID = "e7810a71-73ae-499d-8c15-faa9aef0c3f2";
 
   /**
-   * Default MTU for BLE writes (WeChat default is ~20 bytes)
+   * Default MTU for BLE writes (ATT payload max, not full ATT_MTU)
+   * ATT_MTU = 23 (default), payload max = 23 - 3 = 20
    */
   public static readonly DEFAULT_MTU = 20;
 
@@ -204,6 +205,14 @@ export class NiimbotWechatBleClient extends NiimbotAbstractClient {
   }
 
   /**
+   * Normalize UUID to lowercase for cross-platform compatibility
+   * (iOS/Android may return different case formats)
+   */
+  private normalizeUUID(uuid: string): string {
+    return uuid.toLowerCase();
+  }
+
+  /**
    * Find suitable characteristic (notify && writeNoResponse)
    * Complete sequence per Codex review
    */
@@ -212,7 +221,12 @@ export class NiimbotWechatBleClient extends NiimbotAbstractClient {
     const servicesRes = await wechatPromise<WechatGetServicesSuccess>((opts) => this.wx.getBLEDeviceServices({ deviceId, ...opts }));
     const services: WechatBleService[] = servicesRes.services;
 
+    // Target service UUID (normalized to lowercase)
+    const targetServiceUUID = this.normalizeUUID(WechatBleDefaultConfiguration.SERVICE_UUID);
+
     for (const service of services) {
+      const serviceUUID = this.normalizeUUID(service.uuid);
+
       // Skip short UUIDs (likely standard services)
       if (service.uuid.length < 5) continue;
 
@@ -220,7 +234,7 @@ export class NiimbotWechatBleClient extends NiimbotAbstractClient {
       const charsRes = await wechatPromise<WechatGetCharacteristicsSuccess>((opts) =>
         this.wx.getBLEDeviceCharacteristics({
           deviceId,
-          serviceId: service.uuid,
+          serviceId: service.uuid, // Use original format for API call
           ...opts,
         })
       );
@@ -230,9 +244,10 @@ export class NiimbotWechatBleClient extends NiimbotAbstractClient {
         const props = char.properties;
         // Find characteristic with notify AND writeNoResponse/write
         if (props.notify && (props.writeNoResponse || props.write)) {
+          // Return normalized UUIDs for internal use
           return {
-            serviceUUID: service.uuid,
-            characteristicUUID: char.uuid,
+            serviceUUID: serviceUUID,
+            characteristicUUID: this.normalizeUUID(char.uuid),
           };
         }
       }
@@ -274,13 +289,15 @@ export class NiimbotWechatBleClient extends NiimbotAbstractClient {
     this.characteristicUUID = characteristicUUID;
 
     // Try to get MTU (optional, may not be supported)
+    // Note: ATT_MTU includes 3-byte header, actual payload max = MTU - 3
     try {
       const mtuRes = await wechatPromise<{ mtu: number }>((opts) =>
         this.wx.getBLEMTU({ deviceId, ...opts })
       );
-      this.mtu = mtuRes.mtu;
+      // Subtract 3 bytes for ATT protocol header
+      this.mtu = mtuRes.mtu > 23 ? mtuRes.mtu - 3 : WechatBleDefaultConfiguration.DEFAULT_MTU;
     } catch {
-      // MTU not available, use default
+      // MTU not available, use default (20 bytes payload, 23 bytes ATT_MTU)
       this.mtu = WechatBleDefaultConfiguration.DEFAULT_MTU;
     }
 
@@ -378,20 +395,26 @@ export class NiimbotWechatBleClient extends NiimbotAbstractClient {
           }
         } else if (options?.onDeviceFound) {
           // User-controlled selection via callback
-          const timeout = options?.discoveryTimeout ?? 10000;
+          // Use longer timeout for manual selection (60s vs 10s for auto)
+          const timeout = options?.discoveryTimeout ?? 60000;
           const startTime = Date.now();
           const callback = options.onDeviceFound;
 
+          // Track last notified device count to avoid spamming UI
+          let lastNotifiedCount = 0;
+
           while (Date.now() - startTime < timeout) {
             const devices = this.filterDevices(this.getDiscoveredDevices(), filters.namePrefix);
-            if (devices.length > 0) {
+            // Only notify when device list has new devices (not every 200ms)
+            if (devices.length > 0 && devices.length !== lastNotifiedCount) {
+              lastNotifiedCount = devices.length;
               const selected = await callback(devices);
               if (selected) {
                 targetDevice = selected;
                 break;
               }
             }
-            await Utils.sleep(200); // Debounce interval
+            await Utils.sleep(200); // Polling interval
           }
 
           if (!targetDevice) {

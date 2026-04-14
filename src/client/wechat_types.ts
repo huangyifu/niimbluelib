@@ -219,7 +219,8 @@ export interface NiimbotWechatBleClientConnectOptions {
 
   /**
    * Device discovery callback - user controls device selection
-   * Called repeatedly as devices are discovered (debounced)
+   * Called only when new devices are found (not every poll cycle)
+   * Return null to keep waiting, return device to select it
    */
   onDeviceFound?: (devices: WechatBleDevice[]) => WechatBleDevice | null | Promise<WechatBleDevice | null>;
 
@@ -239,7 +240,8 @@ export interface NiimbotWechatBleClientConnectOptions {
   services?: string[];
 
   /**
-   * Discovery timeout in milliseconds (default 10000)
+   * Discovery timeout in milliseconds
+   * Default: 10000 (10s) for autoSelectFirst, 60000 (60s) for onDeviceFound
    */
   discoveryTimeout?: number;
 
