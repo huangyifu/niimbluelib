@@ -1,8 +1,7 @@
 import { ConnectEvent, DisconnectEvent, RawPacketSentEvent } from "../events";
-import { ConnectionInfo, NiimbotAbstractClient, NIIMBOT_CLIENT_DEFAULTS } from "./abstract_client";
+import { ConnectionInfo, NiimbotAbstractClient } from "./abstract_client";
 import { ConnectResult } from "../packets";
 import { Utils } from "../utils";
-import { modelsLibrary } from "../printer_models";
 import {
   WechatWx,
   WechatBleDevice,
@@ -246,6 +245,9 @@ export class NiimbotWechatBleClient extends NiimbotAbstractClient {
    * Connect to specific device (internal)
    */
   private async connectToDevice(deviceId: string, timeout?: number): Promise<void> {
+    // Set deviceId early so connection state callback can match
+    this.deviceId = deviceId;
+
     // Create BLE connection
     await wechatPromise((opts) =>
       this.wx.createBLEConnection({
@@ -267,8 +269,7 @@ export class NiimbotWechatBleClient extends NiimbotAbstractClient {
     // Find suitable characteristic
     const { serviceUUID, characteristicUUID } = await this.findSuitableCharacteristic(deviceId);
 
-    // Store connection info
-    this.deviceId = deviceId;
+    // Store service/characteristic UUIDs
     this.serviceUUID = serviceUUID;
     this.characteristicUUID = characteristicUUID;
 
@@ -337,7 +338,7 @@ export class NiimbotWechatBleClient extends NiimbotAbstractClient {
    * 1. deviceId provided: direct connect
    * 2. onDeviceFound or autoSelectFirst: discovery + selection
    */
-  public async connect(options?: NiimbotWechatBleClientConnectOptions): Promise<ConnectionInfo> {
+  public override async connect(options?: NiimbotWechatBleClientConnectOptions): Promise<ConnectionInfo> {
     await this.disconnect();
 
     // Initialize adapter
@@ -434,14 +435,14 @@ export class NiimbotWechatBleClient extends NiimbotAbstractClient {
   /**
    * Check if connected
    */
-  public isConnected(): boolean {
+  public override isConnected(): boolean {
     return this.deviceId !== undefined;
   }
 
   /**
    * Disconnect from printer
    */
-  public async disconnect(): Promise<void> {
+  public override async disconnect(): Promise<void> {
     this.stopHeartbeat();
 
     if (this.deviceId !== undefined) {
@@ -460,7 +461,7 @@ export class NiimbotWechatBleClient extends NiimbotAbstractClient {
    *
    * Chunks writes by MTU, preserves packetIntervalMs semantics
    */
-  public async sendRaw(data: Uint8Array, force?: boolean): Promise<void> {
+  public override async sendRaw(data: Uint8Array, force?: boolean): Promise<void> {
     const send = async () => {
       if (!this.isConnected()) {
         throw new Error("Not connected");
