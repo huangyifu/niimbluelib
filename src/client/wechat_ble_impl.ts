@@ -221,9 +221,6 @@ export class NiimbotWechatBleClient extends NiimbotAbstractClient {
     const servicesRes = await wechatPromise<WechatGetServicesSuccess>((opts) => this.wx.getBLEDeviceServices({ deviceId, ...opts }));
     const services: WechatBleService[] = servicesRes.services;
 
-    // Target service UUID (normalized to lowercase)
-    const targetServiceUUID = this.normalizeUUID(WechatBleDefaultConfiguration.SERVICE_UUID);
-
     for (const service of services) {
       const serviceUUID = this.normalizeUUID(service.uuid);
 
