@@ -98,6 +98,9 @@ export class NiimbotWechatBleClient extends NiimbotAbstractClient {
   /** Characteristic value change callback reference */
   private characteristicValueCallback?: (res: WechatCharacteristicValueChangeCallback) => void;
 
+  /** Flag to abort ongoing connection */
+  private abortConnecting: boolean = false;
+
   constructor() {
     super();
     this.wx = getWx();
@@ -227,26 +230,32 @@ export class NiimbotWechatBleClient extends NiimbotAbstractClient {
       // Skip short UUIDs (likely standard services)
       if (service.uuid.length < 5) continue;
 
-      // Get characteristics for this service
-      const charsRes = await wechatPromise<WechatGetCharacteristicsSuccess>((opts) =>
-        this.wx.getBLEDeviceCharacteristics({
-          deviceId,
-          serviceId: service.uuid, // Use original format for API call
-          ...opts,
-        })
-      );
-      const characteristics: WechatBleCharacteristic[] = charsRes.characteristics;
+      try {
+        // Get characteristics for this service
+        const charsRes = await wechatPromise<WechatGetCharacteristicsSuccess>((opts) =>
+          this.wx.getBLEDeviceCharacteristics({
+            deviceId,
+            serviceId: service.uuid, // Use original format for API call
+            ...opts,
+          })
+        );
+        const characteristics: WechatBleCharacteristic[] = charsRes.characteristics;
 
-      for (const char of characteristics) {
-        const props = char.properties;
-        // Find characteristic with notify AND writeNoResponse/write
-        if (props.notify && (props.writeNoResponse || props.write)) {
-          // Return normalized UUIDs for internal use
-          return {
-            serviceUUID: serviceUUID,
-            characteristicUUID: this.normalizeUUID(char.uuid),
-          };
+        for (const char of characteristics) {
+          const props = char.properties;
+          // Find characteristic with notify AND writeNoResponse/write
+          if (props.notify && (props.writeNoResponse || props.write)) {
+            // Return normalized UUIDs for internal use
+            return {
+              serviceUUID: serviceUUID,
+              characteristicUUID: this.normalizeUUID(char.uuid),
+            };
+          }
         }
+      } catch (e) {
+        // Some system services (like 0x1800) may deny access and throw errors.
+        // Ignore them and continue to the next service.
+        continue;
       }
     }
 
@@ -355,6 +364,8 @@ export class NiimbotWechatBleClient extends NiimbotAbstractClient {
   public override async connect(options?: NiimbotWechatBleClientConnectOptions): Promise<ConnectionInfo> {
     await this.disconnect();
 
+    this.abortConnecting = false;
+
     // Initialize adapter
     await this.initializeAdapter();
 
@@ -379,6 +390,8 @@ export class NiimbotWechatBleClient extends NiimbotAbstractClient {
           const startTime = Date.now();
 
           while (Date.now() - startTime < timeout) {
+            if (this.abortConnecting) throw new Error("Connection aborted by user");
+            
             const devices = this.filterDevices(this.getDiscoveredDevices(), filters.namePrefix);
             if (devices.length > 0) {
               targetDevice = devices[0];
@@ -397,14 +410,11 @@ export class NiimbotWechatBleClient extends NiimbotAbstractClient {
           const startTime = Date.now();
           const callback = options.onDeviceFound;
 
-          // Track last notified device count to avoid spamming UI
-          let lastNotifiedCount = 0;
-
           while (Date.now() - startTime < timeout) {
+            if (this.abortConnecting) throw new Error("Connection aborted by user");
+            
             const devices = this.filterDevices(this.getDiscoveredDevices(), filters.namePrefix);
-            // Only notify when device list has new devices (not every 200ms)
-            if (devices.length > 0 && devices.length !== lastNotifiedCount) {
-              lastNotifiedCount = devices.length;
+            if (devices.length > 0) {
               const selected = await callback(devices);
               if (selected) {
                 targetDevice = selected;
@@ -447,6 +457,16 @@ export class NiimbotWechatBleClient extends NiimbotAbstractClient {
     } catch (e) {
       // Cleanup on failure
       await this.stopDiscovery();
+      
+      // Ensure physical disconnection if connection was established but negotiation failed
+      if (this.deviceId) {
+        try {
+          await wechatPromise((opts) => this.wx.closeBLEConnection({ deviceId: this.deviceId!, ...opts }));
+        } catch {
+          // Ignore close errors during failure cleanup
+        }
+      }
+      
       this.cleanup();
       throw e;
     }
@@ -463,7 +483,11 @@ export class NiimbotWechatBleClient extends NiimbotAbstractClient {
    * Disconnect from printer
    */
   public override async disconnect(): Promise<void> {
+    this.abortConnecting = true;
     this.stopHeartbeat();
+
+    // Stop ongoing discovery if any
+    await this.stopDiscovery();
 
     if (this.deviceId !== undefined) {
       try {
